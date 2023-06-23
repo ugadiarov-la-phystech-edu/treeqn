@@ -150,11 +150,11 @@ class Learner(object):
 
             loss = loss + subtree_loss * self.subtree_loss_coef
 
-        self.scheduler.step()
         self.optimizer.zero_grad()
         loss.backward()
         grad_norm = nn.utils.clip_grad_norm(self.model.parameters(), self.max_grad_norm)
         self.optimizer.step()
+        self.scheduler.step()
 
         return policy_loss, value_loss, reward_loss, state_loss, subtree_loss_np, policy_entropy, grad_norm
 

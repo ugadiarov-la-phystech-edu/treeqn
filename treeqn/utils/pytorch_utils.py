@@ -18,7 +18,7 @@ class View(nn.Module):
         self.shape = shape
 
     def forward(self, input):
-        return input.view(*self.shape)
+        return torch.reshape(input, self.shape)
 
 
 class FnModule(nn.Module):
@@ -63,7 +63,7 @@ def count_parameters(model):
 
 
 def ortho_init(tensor, scale=1.0):
-    if isinstance(tensor, Variable):
+    if isinstance(tensor, nn.Parameter):
         ortho_init(tensor.data, scale=scale)
         return tensor
 

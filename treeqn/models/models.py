@@ -14,6 +14,7 @@ from treeqn.utils.pytorch_utils import logsumexp
 
 USE_CUDA = torch.cuda.is_available()
 dtype = torch.cuda.FloatTensor if USE_CUDA else torch.FloatTensor
+device = torch.device('cuda' if USE_CUDA else 'cpu')
 
 
 class TreeQNPolicy(nn.Module):
@@ -132,7 +133,7 @@ class TreeQNPolicy(nn.Module):
 
     def obs_to_variable(self, ob, volatile=False):
         ob = ob.transpose(0, 3, 1, 2)
-        ob = Variable(torch.from_numpy(ob / self.obs_scale).type(dtype), volatile=volatile)
+        ob = torch.tensor(ob / self.obs_scale, dtype=torch.float32, requires_grad=volatile, device=device)
         return ob
 
     def embed_obs(self, ob, volatile=False):
@@ -196,7 +197,7 @@ class TreeQNPolicy(nn.Module):
 
             x = self.tree_transitioning(x)
 
-            x = x.view(-1, self.embedding_dim)
+            x = torch.reshape(x, (-1, self.embedding_dim))
 
             tree_result["embeddings"].append(x)
 

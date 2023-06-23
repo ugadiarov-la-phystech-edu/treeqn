@@ -50,7 +50,7 @@ def get_paths(tree, actions, batch_size, num_actions):
     output = []
     for i, x in enumerate(tree):
         action_indices = action_indices * num_actions + actions[:, i]
-        batch_indices = cudify(torch.arange(0, batch_size).long() * x.size(0) / batch_size) + action_indices
+        batch_indices = cudify(torch.arange(0, batch_size).long() * x.size(0) // batch_size) + action_indices
         output.append(x[batch_indices])
     return output
 

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import functools
 from operator import itemgetter
 import numpy as np
+import wandb
 from treeqn.utils.bench.monitor import load_global_results
 from treeqn.utils.logger import Logger, HumanOutputFormat
 from treeqn.utils.bl_common import explained_variance
@@ -191,6 +192,8 @@ def train(nstack,
           save_folder,
           obs_dtype,
           monitor_dir,
+          project,
+          run_id,
           _run=None):
 
     # initialise environment and model
@@ -233,6 +236,14 @@ def train(nstack,
         checkpoint_interval = number_updates // number_checkpoints
     else:
         checkpoint_interval = 0
+
+    wandb.init(
+        project=project,
+        sync_tensorboard=False,  # auto-upload sb3's tensorboard metrics
+        monitor_gym=False,  # auto-upload the videos of agents playing the game
+        save_code=True,  # optional
+        name=run_id
+    )
 
     # main training loop
     for update in range(1, number_updates):
@@ -290,6 +301,12 @@ def train(nstack,
                 append_scalar(_run, "seconds_per_million", seconds_per_million)
                 append_scalar(_run, "time_per_million", time_per_million)
                 append_scalar(_run, "grad_norm", grad_norm)
+
+            wandb.log({
+                'nupdates': update, 'step': total_timesteps, 'fps': int(fps), 'value_loss': float(value_loss),
+                'reward_loss': float(reward_loss), 'rewards_mean': rewards_mean, 'lengths_mean': lengths_mean,
+                'grad_norm': grad_norm, 'global_step': total_timesteps
+            }, step=total_timesteps)
 
             print(" | ".join(["i: %8d", "m: %12s", "r: %10.2f", "l: %8.0f", "vl: %8.5f", "rl: %8.5f",
                               "sl: %8.5f", "sbtl: %8.5f", "p: %8.5f", "e: %8.5f", "ev: %6.4f", "gn: %6.4f"]) %
