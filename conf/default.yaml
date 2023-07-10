@@ -7,7 +7,7 @@ description: "Default atari"
 # Environment ID:
 # "push-default", or atari game name
 # e.g. "Breakout", "Seaquest", "Pong", "MsPacman"
-env_id: Seaquest
+env_id: Pong
 
 # Number of previous frames stacked into observation
 nstack: 4
@@ -130,6 +130,10 @@ number_checkpoints: 3
 
 # Size of rolling window to calculate mean reward
 log_rolling_window: 100
+
+buffer_size: 100000
+batch_size: 80
+n_batches: 1
 
 # Can be used in experiment definitions to help sorting the results
 label: "default"

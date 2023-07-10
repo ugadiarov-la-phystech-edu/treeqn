@@ -1,3 +1,6 @@
+import math
+import random
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,7 +9,8 @@ from torch.optim.lr_scheduler import LambdaLR
 import torch.autograd as autograd
 import copy
 
-from treeqn.utils.treeqn_utils import discount_with_dones, build_sequences, get_paths, get_subtree, time_shift_tree
+from treeqn.utils.treeqn_utils import discount_with_dones, build_sequences, get_paths, get_subtree, time_shift_tree, \
+    ReplayBufferElement
 from treeqn.utils.schedule import LinearSchedule
 from treeqn.utils.pytorch_utils import cudify
 
@@ -159,8 +163,19 @@ class Learner(object):
         return policy_loss, value_loss, reward_loss, state_loss, subtree_loss_np, policy_entropy, grad_norm
 
 
+def compute_returns(rewards, dones, last_value, gamma):
+    rewards = rewards.tolist()
+    dones = dones.tolist()
+    if dones[-1] == 0:
+        returns = discount_with_dones(rewards + [last_value], dones + [0], gamma)[:-1]
+    else:
+        returns = discount_with_dones(rewards, dones, gamma)
+
+    return returns
+
+
 class Runner(object):
-    def __init__(self, env, learner, nsteps=5, nstack=4, gamma=0.99, obs_dtype=np.uint8, eps_million_frames=4):
+    def __init__(self, env, learner, nsteps=5, nstack=4, gamma=0.99, obs_dtype=np.uint8, eps_million_frames=4, buffer_size=100000):
         self.env = env
         self.learner = learner
         nh, nw, nc = env.observation_space.shape
@@ -179,6 +194,45 @@ class Runner(object):
         if not self.learner.use_actor_critic:
             self.eps_schedule = LinearSchedule(eps_million_frames*1e6, 0.05)
 
+        self.buffer_max_size = math.ceil(buffer_size / self.nsteps)
+        self.buffer_size = 0
+        self.index = 0
+        self.replay_buffer = [None] * self.buffer_max_size
+
+    def get_buffer_size(self):
+        return self.buffer_size * self.nsteps
+
+    def _add(self, buffer_elements):
+        for element in buffer_elements:
+            self.replay_buffer[self.index] = element
+            self.index = (self.index + 1) % self.buffer_max_size
+            self.buffer_size = min(self.buffer_max_size, self.buffer_size + 1)
+
+    def sample(self, batch_size):
+        n_elements = math.ceil(batch_size / self.nsteps)
+        buffer_elements = random.sample(self.replay_buffer[:self.buffer_size], n_elements)
+
+        last_obs = np.stack([element.last_observation for element in buffer_elements])
+        last_values = self.learner.value(last_obs).detach().cpu().numpy()
+        mb_returns = []
+        mb_obs = []
+        mb_rewards = []
+        mb_masks = []
+        mb_actions = []
+        for element, last_value in zip(buffer_elements, last_values):
+            mb_returns.append(np.asarray(compute_returns(element.rewards, element.dones[1:], last_value, self.gamma)))
+            mb_obs.append(element.observations)
+            mb_rewards.append(element.rewards)
+            mb_masks.append(element.dones[:-1])
+            mb_actions.append(element.actions)
+
+        mb_obs = np.concatenate(mb_obs).reshape(self.batch_ob_shape)
+        mb_returns = np.concatenate(mb_returns).flatten().astype(np.float32)
+        mb_rewards = np.concatenate(mb_rewards).flatten()
+        mb_actions = np.concatenate(mb_actions).flatten()
+        mb_masks = np.concatenate(mb_masks).flatten()
+        return mb_obs, mb_returns, mb_rewards, mb_masks, mb_actions
+
     def update_obs(self, obs):
         # Do frame-stacking here instead of the FrameStack wrapper to reduce
         # IPC overhead
@@ -186,15 +240,13 @@ class Runner(object):
         self.obs[:, :, :, -self.nc:] = obs[:, :, :, :]
 
     def run(self):
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones = [], [], [], [], []
+        mb_obs, mb_rewards, mb_actions, mb_dones = [], [], [], []
         if not self.learner.use_actor_critic:
             self.learner.model.eps_threshold = self.eps_schedule.value(self.frames_counter)
         for n in range(self.nsteps):
             actions, values = self.learner.step(self.obs)
-            values = values
             mb_obs.append(np.copy(self.obs))
             mb_actions.append(actions)
-            mb_values.append(values.data.cpu().numpy())
             mb_dones.append(self.dones)
             obs, rewards, dones, _ = self.env.step(actions)
             self.dones = dones
@@ -204,33 +256,16 @@ class Runner(object):
             self.update_obs(obs)
             mb_rewards.append(rewards)
             self.frames_counter += self.nenv
-        mb_next_obs = list(mb_obs[1:])
-        mb_next_obs.append(self.obs)
         mb_dones.append(self.dones)
         # batch of steps to batch of rollouts
-        mb_obs = np.asarray(mb_obs, dtype=self.obs_dtype).swapaxes(1, 0).reshape(self.batch_ob_shape)
-        mb_next_obs = np.asarray(mb_next_obs, dtype=self.obs_dtype).swapaxes(1, 0).reshape(self.batch_ob_shape)
-        mb_returns = np.asarray(mb_rewards, dtype=np.float32).swapaxes(1, 0)
+        mb_obs = np.asarray(mb_obs, dtype=self.obs_dtype).swapaxes(1, 0)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32).swapaxes(1, 0)
-        mb_actions = np.asarray(mb_actions, dtype=np.int32).swapaxes(1, 0)
-        mb_values = np.asarray(mb_values, dtype=np.float32).swapaxes(1, 0)
         mb_dones = np.asarray(mb_dones, dtype=np.bool).swapaxes(1, 0)
-        mb_masks = mb_dones[:, :-1]
-        mb_dones = mb_dones[:, 1:]
-        last_values = self.learner.value(self.obs)
-        last_values = last_values.data.cpu().numpy().tolist()
-        # discount/bootstrap off value fn
-        for n, (rewards, dones, value) in enumerate(zip(mb_rewards, mb_dones, last_values)):
-            rewards = rewards.tolist()
-            dones = dones.tolist()
-            if dones[-1] == 0:
-                returns = discount_with_dones(rewards + [value], dones + [0], self.gamma)[:-1]
-            else:
-                returns = discount_with_dones(rewards, dones, self.gamma)
-            mb_returns[n] = returns
-        mb_returns = mb_returns.flatten()
-        mb_rewards = mb_rewards.flatten()
-        mb_actions = mb_actions.flatten()
-        mb_values = mb_values.flatten()
-        mb_masks = mb_masks.flatten()
-        return mb_obs, mb_next_obs, mb_returns, mb_rewards, mb_masks, mb_actions, mb_values
+        mb_actions = np.asarray(mb_actions, dtype=np.int32).swapaxes(1, 0)
+
+        buffer_elements = []
+        for i in range(self.nenv):
+            replay_buffer_element = ReplayBufferElement(mb_obs[i], mb_actions[i], mb_rewards[i], mb_dones[i], self.obs[i].copy())
+            buffer_elements.append(replay_buffer_element)
+
+        self._add(buffer_elements)

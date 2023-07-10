@@ -112,3 +112,12 @@ def append_list(run, key, val):
         run.info[key].extend(val)
     else:
         run.info[key] = [val]
+
+
+class ReplayBufferElement:
+    def __init__(self, observations, actions, rewards, dones, last_observation):
+        self.observations = observations
+        self.actions = actions
+        self.rewards = rewards
+        self.dones = dones
+        self.last_observation = last_observation

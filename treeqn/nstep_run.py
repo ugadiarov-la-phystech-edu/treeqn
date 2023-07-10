@@ -192,6 +192,9 @@ def train(nstack,
           save_folder,
           obs_dtype,
           monitor_dir,
+          buffer_size,
+          batch_size,
+          n_batches,
           project,
           run_id,
           _run=None):
@@ -225,7 +228,7 @@ def train(nstack,
 
     # initialise runner (carries out interactions with environment)
     runner = Runner(env, learner, nsteps=nsteps, nstack=nstack, gamma=gamma, obs_dtype=obs_dtype,
-                    eps_million_frames=eps_million_frames)
+                    eps_million_frames=eps_million_frames, buffer_size=buffer_size)
 
     tstart = time.time()
 
@@ -247,10 +250,32 @@ def train(nstack,
 
     # main training loop
     for update in range(1, number_updates):
-        mb_data = runner.run()
-        obs, next_obs, returns, rewards, masks, actions, values = mb_data
-        policy_loss, value_loss, reward_loss, state_loss, subtree_loss, policy_entropy, grad_norm = learner.train(
-            *mb_data)
+        runner.run()
+        if runner.get_buffer_size() < batch_size:
+            continue
+
+        policy_loss, value_loss, reward_loss, state_loss, subtree_loss, policy_entropy, grad_norm = [0] * 7
+        for _ in range(n_batches):
+            obs, returns, rewards, masks, actions = runner.sample(batch_size)
+            policy_loss_, value_loss_, reward_loss_, state_loss_, subtree_loss_, policy_entropy_, grad_norm_ = learner.train(
+                obs, None, returns, rewards, masks, actions, None)
+                # *mb_data)
+            policy_loss += policy_loss_
+            value_loss += value_loss_
+            reward_loss += reward_loss_
+            state_loss += state_loss_
+            subtree_loss += subtree_loss_
+            policy_entropy += policy_entropy_
+            grad_norm += grad_norm_
+
+        policy_loss /= n_batches
+        value_loss /= n_batches
+        reward_loss /= n_batches
+        state_loss /= n_batches
+        subtree_loss /= n_batches
+        policy_entropy /= n_batches
+        grad_norm /= n_batches
+
         nseconds = time.time() - tstart
         fps = (update * nbatch) / nseconds
 
@@ -260,7 +285,7 @@ def train(nstack,
 
         # logging
         if update % log_interval == 0 or update == 1:
-            ev = explained_variance(values, returns)
+            # ev = explained_variance(values, returns)
             append_scalar(_run, "nupdates", update)
 
             total_timesteps = update * nbatch
@@ -273,7 +298,7 @@ def train(nstack,
                 append_scalar(_run, "reward_loss", float(reward_loss))
                 append_scalar(_run, "state_loss", float(state_loss))
                 append_scalar(_run, "subtree_loss", float(subtree_loss))
-                append_scalar(_run, "explained_variance", float(ev))
+                # append_scalar(_run, "explained_variance", float(ev))
 
             rewards, lengths, steps = load_global_results(monitor_dir)
 
@@ -309,9 +334,11 @@ def train(nstack,
             }, step=total_timesteps)
 
             print(" | ".join(["i: %8d", "m: %12s", "r: %10.2f", "l: %8.0f", "vl: %8.5f", "rl: %8.5f",
-                              "sl: %8.5f", "sbtl: %8.5f", "p: %8.5f", "e: %8.5f", "ev: %6.4f", "gn: %6.4f"]) %
+                              "sl: %8.5f", "sbtl: %8.5f", "p: %8.5f", "e: %8.5f", #"ev: %6.4f",
+                              "gn: %6.4f"]) %
                   (total_timesteps, time_per_million, rewards_mean, lengths_mean, value_loss,
-                   reward_loss, state_loss, subtree_loss, policy_loss, policy_entropy, ev, grad_norm))
+                   reward_loss, state_loss, subtree_loss, policy_loss, policy_entropy, #ev,
+                   grad_norm))
 
         if number_checkpoints > 0 and (update % checkpoint_interval == 0
                                        or update == number_updates - 1):
