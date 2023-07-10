@@ -120,7 +120,7 @@ ent_coef: 0.01
 save_folder: "./results/temp/"
 
 # Number of model updates between logging
-log_interval: 1000
+log_interval: 200
 
 # Records full statistics for debugging. Can be memory-hungry due to Sacred.
 debug_log: False
